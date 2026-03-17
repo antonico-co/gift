@@ -96,16 +96,29 @@ interface GiftResult {
   title: string;
   url: string;
   description?: string;
+  price?: string;
 }
 
+const PRICE_RE = /(?:£|€|\$|USD\s?|GBP\s?|EUR\s?)[\d,]+(?:\.\d{1,2})?/i;
+
 async function searchGifts(query: string): Promise<GiftResult[]> {
-  const results = await firecrawl.search(`buy gift ${query}`, { limit: 5 });
+  const results = await firecrawl.search(`${query}`, {
+    limit: 5,
+    scrapeOptions: { formats: ['markdown'] },
+  });
+
   const webResults = results.web ?? [];
-  return webResults.slice(0, 5).map((r) => ({
-    title: (r as { title?: string; url: string; description?: string }).title ?? 'Gift idea',
-    url: (r as { url: string }).url,
-    description: (r as { description?: string }).description,
-  }));
+  return webResults.slice(0, 5).map((r) => {
+    const item = r as { title?: string; url: string; description?: string; markdown?: string };
+    // Try to pull a price from the scraped page markdown
+    const priceMatch = item.markdown?.match(PRICE_RE);
+    return {
+      title: item.title ?? 'Gift idea',
+      url: item.url,
+      description: item.description,
+      price: priceMatch?.[0],
+    };
+  });
 }
 
 // ── Claude gift concierge ──────────────────────────────────────────────────
@@ -116,7 +129,13 @@ Keep replies concise and conversational — WhatsApp format, not email. Use shor
 
 When you have enough info about the recipient (their interests, relationship, occasion, budget), call the search_gifts tool to find real product options. You can call it multiple times with different queries.
 
-After getting search results, present 3–5 gift ideas clearly: name, why it suits them, and a link to buy.
+For the search query, target real shopping sites to get better results — for example:
+- "etsy personalised gift for dog lover"
+- "amazon gifts for home baker under £40"
+- "notonthehighstreet unique birthday gift for mum"
+- "uncommongoods gifts for coffee enthusiast"
+
+After getting search results, present 3–5 gift ideas clearly: name, price (if shown), why it suits the recipient, and a link to buy. If no price was found, say "check site for price."
 
 If the user sends an image, analyse it carefully — it could be an Instagram profile, a wishlist, a photo of the person, or something they like. Extract any useful clues about their interests, age, style, or hobbies, and use those to inform your gift search.`;
 
@@ -134,13 +153,13 @@ async function runGiftConcierge(
   const tools: Anthropic.Tool[] = [
     {
       name: 'search_gifts',
-      description: 'Search the web for gift products matching a query. Call this when you have enough info about the recipient to find relevant gifts.',
+      description: 'Search the web for gift products. Target shopping sites for better results e.g. "etsy personalised gift dog lover" or "amazon tech gadgets teenager under £50".',
       input_schema: {
         type: 'object' as const,
         properties: {
           query: {
             type: 'string',
-            description: 'Search query e.g. "gifts for hiking enthusiast under $50" or "tech gadgets for teenager"',
+            description: 'Search query targeting a shopping site e.g. "etsy gifts for plant lover" or "amazon hiking gifts under $50"',
           },
         },
         required: ['query'],
