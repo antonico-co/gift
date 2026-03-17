@@ -228,9 +228,23 @@ async function clearHistory(from: string): Promise<void> {
   await kv.del(`chat:${from}`);
 }
 
+// Replace image blocks with a lightweight placeholder before storing in KV.
+// Keeps history small and avoids re-sending large base64 blobs to Claude.
+function toStorableContent(content: UserContent): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map((block) => {
+      const b = block as { type: string; text?: string };
+      if (b.type === 'image') return '[image]';
+      return b.text ?? '';
+    }).filter(Boolean).join(' ');
+  }
+  return '[message]';
+}
+
 async function appendHistory(from: string, userContent: UserContent, assistantMsg: string): Promise<void> {
   const history = await getHistory(from);
-  history.push({ role: 'user', content: userContent as Anthropic.MessageParam['content'] });
+  history.push({ role: 'user', content: toStorableContent(userContent) });
   history.push({ role: 'assistant', content: assistantMsg });
   await kv.set(`chat:${from}`, history.slice(-20), { ex: KV_TTL_SECONDS });
 }
