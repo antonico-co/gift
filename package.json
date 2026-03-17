@@ -7,6 +7,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.79.0",
-    "@mendable/firecrawl-js": "^4.16.0"
+    "@mendable/firecrawl-js": "^4.16.0",
+    "@vercel/kv": "^3.0.0"
   }
 }

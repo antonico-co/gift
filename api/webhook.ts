@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import crypto from 'crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import FirecrawlApp from '@mendable/firecrawl-js';
+import { kv } from '@vercel/kv';
 
 // Disable Vercel's body parser so we can read the raw body for HMAC verification
 export const config = {
@@ -180,21 +181,20 @@ async function runGiftConcierge(
   return textBlock?.text ?? "Sorry, I couldn't come up with gift ideas right now. Try again in a moment!";
 }
 
-// ── Conversation store (in-memory, resets on cold start) ───────────────────
-// For production, swap this for Redis or Vercel KV.
-const conversationStore = new Map<string, Anthropic.MessageParam[]>();
+// ── Conversation store (Vercel KV) ─────────────────────────────────────────
 
-function getHistory(from: string): Anthropic.MessageParam[] {
-  return conversationStore.get(from) ?? [];
+const KV_TTL_SECONDS = 60 * 60 * 24; // 24 hours — conversations expire after a day of inactivity
+
+async function getHistory(from: string): Promise<Anthropic.MessageParam[]> {
+  return (await kv.get<Anthropic.MessageParam[]>(`chat:${from}`)) ?? [];
 }
 
-function appendHistory(from: string, userMsg: string, assistantMsg: string): void {
-  const history = getHistory(from);
+async function appendHistory(from: string, userMsg: string, assistantMsg: string): Promise<void> {
+  const history = await getHistory(from);
   history.push({ role: 'user', content: userMsg });
   history.push({ role: 'assistant', content: assistantMsg });
   // Keep last 20 turns to stay within context limits
-  const trimmed = history.slice(-20);
-  conversationStore.set(from, trimmed);
+  await kv.set(`chat:${from}`, history.slice(-20), { ex: KV_TTL_SECONDS });
 }
 
 // ── Message handling ───────────────────────────────────────────────────────
@@ -225,10 +225,10 @@ async function handleIncomingMessage(payload: KapsoWebhookPayload): Promise<void
     return; // Ignore unsupported message types
   }
 
-  const history = getHistory(from);
+  const history = await getHistory(from);
   const reply = await runGiftConcierge(userText, history);
 
-  appendHistory(from, userText, reply);
+  await appendHistory(from, userText, reply);
   await sendWhatsAppMessage(from, reply);
 }
 
