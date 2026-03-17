@@ -72,20 +72,34 @@ async function sendWhatsAppMessage(to: string, text: string): Promise<void> {
   }
 }
 
+// ── Image fetching ─────────────────────────────────────────────────────────
+
+async function fetchImageAsBase64(url: string): Promise<{ data: string; mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' }> {
+  const res = await fetch(url, {
+    headers: { 'X-API-Key': KAPSO_API_KEY },
+  });
+  if (!res.ok) throw new Error(`Failed to fetch image (${res.status})`);
+
+  const contentType = res.headers.get('content-type') ?? 'image/jpeg';
+  const mediaType = (['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(contentType)
+    ? contentType
+    : 'image/jpeg') as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+
+  const buffer = await res.arrayBuffer();
+  const data = Buffer.from(buffer).toString('base64');
+  return { data, mediaType };
+}
+
 // ── Firecrawl gift search ──────────────────────────────────────────────────
 
 interface GiftResult {
   title: string;
-  price?: string;
   url: string;
   description?: string;
 }
 
 async function searchGifts(query: string): Promise<GiftResult[]> {
-  const results = await firecrawl.search(`buy gift ${query}`, {
-    limit: 5,
-  });
-
+  const results = await firecrawl.search(`buy gift ${query}`, { limit: 5 });
   const webResults = results.web ?? [];
   return webResults.slice(0, 5).map((r) => ({
     title: (r as { title?: string; url: string; description?: string }).title ?? 'Gift idea',
@@ -104,15 +118,17 @@ When you have enough info about the recipient (their interests, relationship, oc
 
 After getting search results, present 3–5 gift ideas clearly: name, why it suits them, and a link to buy.
 
-If the user sends an image (Instagram screenshot, wishlist, etc.), acknowledge it and ask who it's for if not clear.`;
+If the user sends an image, analyse it carefully — it could be an Instagram profile, a wishlist, a photo of the person, or something they like. Extract any useful clues about their interests, age, style, or hobbies, and use those to inform your gift search.`;
+
+type UserContent = string | Anthropic.MessageParam['content'];
 
 async function runGiftConcierge(
-  userMessage: string,
+  userContent: UserContent,
   conversationHistory: Anthropic.MessageParam[]
 ): Promise<string> {
   const messages: Anthropic.MessageParam[] = [
     ...conversationHistory,
-    { role: 'user', content: userMessage },
+    { role: 'user', content: userContent as Anthropic.MessageParam['content'] },
   ];
 
   const tools: Anthropic.Tool[] = [
@@ -183,52 +199,74 @@ async function runGiftConcierge(
 
 // ── Conversation store (Vercel KV) ─────────────────────────────────────────
 
-const KV_TTL_SECONDS = 60 * 60 * 24; // 24 hours — conversations expire after a day of inactivity
+const KV_TTL_SECONDS = 60 * 60 * 24; // 24 hours — expires after a day of inactivity
 
 async function getHistory(from: string): Promise<Anthropic.MessageParam[]> {
   return (await kv.get<Anthropic.MessageParam[]>(`chat:${from}`)) ?? [];
 }
 
-async function appendHistory(from: string, userMsg: string, assistantMsg: string): Promise<void> {
+async function clearHistory(from: string): Promise<void> {
+  await kv.del(`chat:${from}`);
+}
+
+async function appendHistory(from: string, userContent: UserContent, assistantMsg: string): Promise<void> {
   const history = await getHistory(from);
-  history.push({ role: 'user', content: userMsg });
+  history.push({ role: 'user', content: userContent as Anthropic.MessageParam['content'] });
   history.push({ role: 'assistant', content: assistantMsg });
-  // Keep last 20 turns to stay within context limits
   await kv.set(`chat:${from}`, history.slice(-20), { ex: KV_TTL_SECONDS });
 }
 
 // ── Message handling ───────────────────────────────────────────────────────
 
+const RESET_TRIGGERS = /\b(reset|start over|new gift|restart|clear|begin again)\b/i;
+
+const GREETING =
+  "👋 Hi! I'm your Gift Concierge.\n\nTell me who you're shopping for — their interests, the occasion, and your budget — and I'll find the perfect gift ideas!";
+
 async function handleIncomingMessage(payload: KapsoWebhookPayload): Promise<void> {
   const { message, is_new_conversation } = payload;
   const from = message.from;
 
-  // Greet on fresh conversation start
+  // Greet on fresh conversation start (no message body yet)
   if (is_new_conversation && !message.content?.trim()) {
-    await sendWhatsAppMessage(
-      from,
-      "👋 Hi! I'm your Gift Concierge.\n\nTell me who you're shopping for — their interests, the occasion, and your budget — and I'll find the perfect gift ideas!"
-    );
+    await sendWhatsAppMessage(from, GREETING);
     return;
   }
 
-  let userText: string;
+  // Reset trigger — wipe history and re-greet
+  if (message.message_type === 'text' && RESET_TRIGGERS.test(message.content ?? '')) {
+    await clearHistory(from);
+    await sendWhatsAppMessage(from, "🔄 Starting fresh!\n\n" + GREETING);
+    return;
+  }
 
-  if (message.message_type === 'image') {
+  let userContent: UserContent;
+
+  if (message.message_type === 'image' && message.media_data?.url) {
+    // Fetch the real image and pass it to Claude Vision
     const caption = message.message_type_data?.caption;
-    userText = caption
-      ? `[User sent an image with caption: "${caption}"]`
-      : '[User sent an image — likely a photo of the recipient or their interests]';
+    try {
+      const { data, mediaType } = await fetchImageAsBase64(message.media_data.url);
+      userContent = [
+        { type: 'image', source: { type: 'base64', media_type: mediaType, data } } satisfies Anthropic.ImageBlockParam,
+        { type: 'text', text: caption ? `Caption: "${caption}"` : 'What can you tell about this person or their interests from this image?' } satisfies Anthropic.TextBlockParam,
+      ];
+    } catch {
+      // Fall back to text description if image fetch fails
+      userContent = caption
+        ? `[User sent an image with caption: "${caption}"]`
+        : '[User sent an image — likely a photo of the recipient or their interests]';
+    }
   } else if (message.message_type === 'text' && message.content) {
-    userText = message.content;
+    userContent = message.content;
   } else {
     return; // Ignore unsupported message types
   }
 
   const history = await getHistory(from);
-  const reply = await runGiftConcierge(userText, history);
+  const reply = await runGiftConcierge(userContent, history);
 
-  await appendHistory(from, userText, reply);
+  await appendHistory(from, userContent, reply);
   await sendWhatsAppMessage(from, reply);
 }
 
