@@ -4,5 +4,9 @@
   "devDependencies": {
     "@vercel/node": "^3.0.0",
     "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.79.0",
+    "@mendable/firecrawl-js": "^4.16.0"
   }
 }
