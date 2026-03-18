@@ -16,6 +16,10 @@ const KAPSO_API_KEY = process.env.KAPSO_API_KEY!;
 const KAPSO_PHONE_NUMBER_ID = process.env.KAPSO_PHONE_NUMBER_ID!;
 const KAPSO_WEBHOOK_SECRET = process.env.KAPSO_WEBHOOK_SECRET;
 
+if (!KAPSO_WEBHOOK_SECRET) {
+  console.warn('Warning: KAPSO_WEBHOOK_SECRET is not set — incoming webhook requests will not be authenticated.');
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 interface KapsoMessage {
@@ -34,6 +38,23 @@ interface KapsoWebhookPayload {
   is_new_conversation?: boolean;
 }
 
+// ── Payload validation ─────────────────────────────────────────────────────
+
+export function validatePayload(payload: unknown): payload is KapsoWebhookPayload {
+  if (!payload || typeof payload !== 'object') return false;
+  const p = payload as Record<string, unknown>;
+  const msg = p.message;
+  if (!msg || typeof msg !== 'object') return false;
+  const m = msg as Record<string, unknown>;
+  if (typeof m.id !== 'string' || typeof m.from !== 'string') return false;
+  if (typeof m.message_type !== 'string') return false;
+  const conv = p.conversation;
+  if (!conv || typeof conv !== 'object') return false;
+  const c = conv as Record<string, unknown>;
+  if (typeof c.id !== 'string' || typeof c.phone_number !== 'string') return false;
+  return true;
+}
+
 // ── Raw body + signature ───────────────────────────────────────────────────
 
 function getRawBody(req: VercelRequest): Promise<string> {
@@ -46,7 +67,7 @@ function getRawBody(req: VercelRequest): Promise<string> {
   });
 }
 
-function verifySignature(rawBody: string, signature: string, secret: string): boolean {
+export function verifySignature(rawBody: string, signature: string, secret: string): boolean {
   const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
   try {
     const sigBuf = new Uint8Array(Buffer.from(signature, 'utf8'));
@@ -99,7 +120,7 @@ interface GiftResult {
   price?: string;
 }
 
-const PRICE_RE = /(?:£|€|\$|USD\s?|GBP\s?|EUR\s?)[\d,]+(?:\.\d{1,2})?/i;
+export const PRICE_RE = /(?:£|€|\$|US\$|CA\$|AU\$|NZ\$)\s?[\d,]+(?:\.\d{1,2})?|(?:USD|GBP|EUR|CAD|AUD)\s?[\d,]+(?:\.\d{1,2})?|[\d,]+(?:\.\d{1,2})?\s?(?:USD|GBP|EUR)/i;
 
 async function searchGifts(query: string): Promise<GiftResult[]> {
   const results = await firecrawl.search(`${query}`, {
@@ -228,7 +249,7 @@ async function clearHistory(from: string): Promise<void> {
 
 // Replace image blocks with a lightweight placeholder before storing in KV.
 // Keeps history small and avoids re-sending large base64 blobs to Claude.
-function toStorableContent(content: UserContent): string {
+export function toStorableContent(content: UserContent): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     return content.map((block) => {
@@ -249,7 +270,7 @@ async function appendHistory(from: string, userContent: UserContent, assistantMs
 
 // ── Message handling ───────────────────────────────────────────────────────
 
-const RESET_TRIGGERS = /\b(reset|start over|new gift|restart|clear|begin again)\b/i;
+export const RESET_TRIGGERS = /\b(reset|start over|new gift|restart|clear|begin again)\b/i;
 
 const GREETING =
   "👋 Hi! I'm your Gift Concierge.\n\nTell me who you're shopping for — their interests, the occasion, and your budget — and I'll find the perfect gift ideas!";
@@ -324,7 +345,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({ ok: true });
   }
 
-  const payload = JSON.parse(rawBody) as KapsoWebhookPayload;
+  const parsed: unknown = JSON.parse(rawBody);
+  if (!validatePayload(parsed)) {
+    console.error('Invalid webhook payload structure:', rawBody.slice(0, 200));
+    return res.status(400).json({ error: 'Invalid payload' });
+  }
+  const payload = parsed;
 
   if (payload.message?.direction === 'outbound') {
     return res.status(200).json({ ok: true });
