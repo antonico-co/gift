@@ -169,8 +169,7 @@ async function runGiftConcierge(
 
   let response = await anthropic.messages.create({
     model: 'claude-opus-4-6',
-    max_tokens: 1024,
-    thinking: { type: 'adaptive' },
+    max_tokens: 2048,
     system: SYSTEM_PROMPT,
     tools,
     messages,
@@ -204,8 +203,7 @@ async function runGiftConcierge(
 
     response = await anthropic.messages.create({
       model: 'claude-opus-4-6',
-      max_tokens: 1024,
-      thinking: { type: 'adaptive' },
+      max_tokens: 2048,
       system: SYSTEM_PROMPT,
       tools,
       messages,
