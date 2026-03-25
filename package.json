@@ -1,0 +1,19 @@
+{
+  "name": "gift",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@vercel/node": "^3.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^2.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.79.0",
+    "@mendable/firecrawl-js": "^4.16.0",
+    "@vercel/edge-config": "^1.4.3",
+    "@vercel/kv": "^3.0.0"
+  }
+}
