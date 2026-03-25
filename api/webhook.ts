@@ -321,6 +321,14 @@ export default async function handler(
       userContent = msg.text.body;
     }
 
+    // Reset command — clears conversation history
+    if (typeof userContent === "string" && /^(reset|start over|restart)$/i.test(userContent.trim())) {
+      await saveHistory(phone, []);
+      await sendWhatsAppMessage(phone, "Got it! Starting fresh. Where are you and what are you in the mood for?");
+      res.status(200).json({ ok: true });
+      return;
+    }
+
     const updatedHistory: ConversationMessage[] = [
       ...history,
       { role: "user", content: userContent },
